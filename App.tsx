@@ -11,9 +11,24 @@ import MatchesDashboard from './components/MatchesDashboard';
 import TrainingsDashboard from './components/TrainingsDashboard';
 
 // --- Google API Configuration ---
-const API_KEY = process.env.API_KEY;
-const CLIENT_ID = process.env.CLIENT_ID || 'YOUR_CLIENT_ID.apps.googleusercontent.com';
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID || 'YOUR_SPREADSHEET_ID';
+declare global {
+    interface Window {
+        gapi: any;
+        google: any;
+        tokenClient: any;
+        // This object will be injected by Netlify
+        GOOGLE_CREDS?: {
+            API_KEY: string;
+            CLIENT_ID: string;
+            SPREADSHEET_ID: string;
+        }
+    }
+}
+
+// Read credentials safely from the window object
+const API_KEY = window.GOOGLE_CREDS?.API_KEY;
+const CLIENT_ID = window.GOOGLE_CREDS?.CLIENT_ID;
+const SPREADSHEET_ID = window.GOOGLE_CREDS?.SPREADSHEET_ID;
 
 const DISCOVERY_DOC = 'https://sheets.googleapis.com/$discovery/rest?version=v4';
 const SCOPES = 'https://www.googleapis.com/auth/spreadsheets';
@@ -25,13 +40,6 @@ const SHEET_NAMES = {
     trainings: 'Entrenamientos',
 };
 
-declare global {
-    interface Window {
-        gapi: any;
-        google: any;
-        tokenClient: any;
-    }
-}
 
 const App: React.FC = () => {
     // --- App State ---
@@ -77,11 +85,21 @@ const App: React.FC = () => {
 
 
     useEffect(() => {
+        // Initial check for credentials
+        if (!API_KEY || !CLIENT_ID || !SPREADSHEET_ID) {
+            setAuthStatus('Error de Configuración: Faltan las variables de entorno en Netlify. Por favor, añádelas en la configuración de tu sitio.');
+            return; // Stop initialization
+        }
         initializeOrResetData();
     }, [initializeOrResetData]);
     
     // --- Google API Handlers ---
     useEffect(() => {
+        // Double-check credentials before loading scripts
+        if (!API_KEY || !CLIENT_ID || !SPREADSHEET_ID) {
+            return; // Don't proceed if creds are missing
+        }
+
         const gapiLoaded = () => {
             window.gapi.load('client', async () => {
                 await window.gapi.client.init({ apiKey: API_KEY, discoveryDocs: [DISCOVERY_DOC] });
@@ -89,18 +107,17 @@ const App: React.FC = () => {
             });
         };
         const gsiLoaded = () => {
-            if (!CLIENT_ID.startsWith('YOUR_')) {
-                window.tokenClient = window.google.accounts.oauth2.initTokenClient({
-                    client_id: CLIENT_ID,
-                    scope: SCOPES,
-                    callback: (resp: any) => {
-                        if (resp.error) throw resp;
-                        setSignedIn(true);
-                        setAuthStatus('Sesión iniciada. Ya puedes guardar o cargar datos.');
-                    },
-                });
-            }
+            window.tokenClient = window.google.accounts.oauth2.initTokenClient({
+                client_id: CLIENT_ID,
+                scope: SCOPES,
+                callback: (resp: any) => {
+                    if (resp.error) throw resp;
+                    setSignedIn(true);
+                    setAuthStatus('Sesión iniciada. Ya puedes guardar o cargar datos.');
+                },
+            });
         };
+        
         const intervalId = setInterval(() => {
             if (typeof window.gapi !== 'undefined' && typeof window.google !== 'undefined') {
                 clearInterval(intervalId);
@@ -108,8 +125,9 @@ const App: React.FC = () => {
                 gsiLoaded();
             }
         }, 100);
+
         return () => clearInterval(intervalId);
-    }, []);
+    }, []); // Empty dependency array means this runs only once after the initial render
 
     const handleSignIn = () => {
         if (!isGapiReady || !window.tokenClient) {
@@ -133,7 +151,7 @@ const App: React.FC = () => {
     // --- Data Persistence ---
 
     const saveDataToSheet = async () => {
-        if (!isSignedIn || SPREADSHEET_ID.startsWith('YOUR_')) {
+        if (!isSignedIn || !SPREADSHEET_ID) {
             setAuthStatus('Debes iniciar sesión y tener un ID de hoja de cálculo válido.');
             return;
         }
@@ -174,7 +192,7 @@ const App: React.FC = () => {
     };
 
     const loadDataFromSheet = async () => {
-        if (!isSignedIn || SPREADSHEET_ID.startsWith('YOUR_')) {
+        if (!isSignedIn || !SPREADSHEET_ID) {
             setAuthStatus('Debes iniciar sesión y tener un ID de hoja de cálculo válido.');
             return;
         }
@@ -390,7 +408,11 @@ const App: React.FC = () => {
         { id: 'rankings', label: 'Rankings', icon: '📈' },
     ];
     
-    const authStatusColor = isSignedIn ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800';
+    const authStatusColor = isSignedIn 
+        ? 'bg-green-100 text-green-800' 
+        : authStatus.startsWith('Error') 
+        ? 'bg-red-100 text-red-800'
+        : 'bg-yellow-100 text-yellow-800';
 
     return (
         <div className="p-2 sm:p-6 md:p-8">
@@ -436,7 +458,7 @@ const App: React.FC = () => {
                             
                             <div className="space-y-3">
                                 {!isSignedIn ? (
-                                    <button onClick={handleSignIn} disabled={!isGapiReady || isProcessing} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base">
+                                    <button onClick={handleSignIn} disabled={!isGapiReady || isProcessing || authStatus.startsWith('Error')} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base">
                                         Iniciar sesión con Google
                                     </button>
                                 ) : (
