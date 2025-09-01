@@ -1,0 +1,5 @@
+{
+  "name": "Gestion pruebas fisicas",
+  "description": "Un dashboard interactivo para rastrear, visualizar y analizar datos de rendimiento deportivo para un equipo de atletas. Incluye edición de datos, seguimiento del progreso individual, comparativas de equipo y sincronización con Google Sheets.",
+  "requestFramePermissions": []
+}
