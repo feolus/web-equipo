@@ -25,11 +25,6 @@ declare global {
     }
 }
 
-// Read credentials safely from the window object
-const API_KEY = window.GOOGLE_CREDS?.API_KEY;
-const CLIENT_ID = window.GOOGLE_CREDS?.CLIENT_ID;
-const SPREADSHEET_ID = window.GOOGLE_CREDS?.SPREADSHEET_ID;
-
 const DISCOVERY_DOC = 'https://sheets.googleapis.com/$discovery/rest?version=v4';
 const SCOPES = 'https://www.googleapis.com/auth/spreadsheets';
 
@@ -42,6 +37,13 @@ const SHEET_NAMES = {
 
 
 const App: React.FC = () => {
+    // --- Safe Credential Reading ---
+    // Read credentials inside the component to ensure window object is populated
+    const API_KEY = window.GOOGLE_CREDS?.API_KEY;
+    const CLIENT_ID = window.GOOGLE_CREDS?.CLIENT_ID;
+    const SPREADSHEET_ID = window.GOOGLE_CREDS?.SPREADSHEET_ID;
+    const areCredsMissing = !API_KEY || !CLIENT_ID || !SPREADSHEET_ID;
+
     // --- App State ---
     const [activeMainTab, setActiveMainTab] = useState<MainTab>('login');
     const [activeSubTab, setActiveSubTab] = useState<PhysicalTestTab>('datos');
@@ -85,19 +87,14 @@ const App: React.FC = () => {
 
 
     useEffect(() => {
-        // Initial check for credentials
-        if (!API_KEY || !CLIENT_ID || !SPREADSHEET_ID) {
-            setAuthStatus('Error de Configuración: Faltan las variables de entorno en Netlify. Por favor, añádelas en la configuración de tu sitio.');
-            return; // Stop initialization
-        }
         initializeOrResetData();
     }, [initializeOrResetData]);
     
     // --- Google API Handlers ---
     useEffect(() => {
-        // Double-check credentials before loading scripts
-        if (!API_KEY || !CLIENT_ID || !SPREADSHEET_ID) {
-            return; // Don't proceed if creds are missing
+        // Don't proceed if creds are missing
+        if (areCredsMissing) {
+            return;
         }
 
         const gapiLoaded = () => {
@@ -127,7 +124,7 @@ const App: React.FC = () => {
         }, 100);
 
         return () => clearInterval(intervalId);
-    }, []); // Empty dependency array means this runs only once after the initial render
+    }, [areCredsMissing, API_KEY, CLIENT_ID]); // Rerun if creds change
 
     const handleSignIn = () => {
         if (!isGapiReady || !window.tokenClient) {
@@ -414,6 +411,37 @@ const App: React.FC = () => {
         ? 'bg-red-100 text-red-800'
         : 'bg-yellow-100 text-yellow-800';
 
+    // --- Main Render Logic ---
+
+    // Render a clear error message if configuration is missing
+    if (areCredsMissing) {
+        return (
+            <div className="p-4 sm:p-8">
+                <div className="max-w-3xl mx-auto bg-red-50 border border-red-200 rounded-xl shadow-lg p-8 text-center">
+                    <h1 className="text-3xl font-bold text-red-800">❌ Error de Configuración</h1>
+                    <p className="mt-4 text-lg text-red-700">
+                        La aplicación no puede iniciarse porque faltan las credenciales de la API de Google.
+                    </p>
+                    <div className="mt-6 text-left bg-red-100 p-4 rounded-md">
+                        <p className="font-semibold text-red-900">Por favor, revisa los siguientes puntos en tu configuración de Netlify:</p>
+                        <ul className="list-disc list-inside mt-2 text-red-800 space-y-1">
+                            <li>Ve a <strong>Site configuration &gt; Build & deploy &gt; Environment</strong>.</li>
+                            <li>Asegúrate de que las siguientes <strong>variables de entorno</strong> existan y tengan un valor:
+                                <ul className="list-['✓'] list-inside ml-6 font-mono bg-white p-2 my-2 rounded">
+                                    <li>API_KEY</li>
+                                    <li>CLIENT_ID</li>
+                                    <li>SPREADSHEET_ID</li>
+                                </ul>
+                            </li>
+                             <li>Ve a <strong>Site configuration &gt; Build & deploy &gt; Post processing &gt; Snippet injection</strong> y verifica que el script de inyección de snippets esté configurado correctamente.</li>
+                            <li>Después de hacer cambios, recuerda hacer un **"Trigger deploy"** para que se apliquen.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="p-2 sm:p-6 md:p-8">
             <div className="max-w-7xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden">
@@ -458,7 +486,7 @@ const App: React.FC = () => {
                             
                             <div className="space-y-3">
                                 {!isSignedIn ? (
-                                    <button onClick={handleSignIn} disabled={!isGapiReady || isProcessing || authStatus.startsWith('Error')} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base">
+                                    <button onClick={handleSignIn} disabled={!isGapiReady || isProcessing} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base">
                                         Iniciar sesión con Google
                                     </button>
                                 ) : (
