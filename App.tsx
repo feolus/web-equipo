@@ -330,6 +330,8 @@ const App: React.FC = () => {
         setPerformanceData(prev => {
             const newData = { ...prev };
             Object.keys(newData).forEach(player => {
+                // Create a copy of the nested player object to ensure immutability
+                newData[player] = { ...newData[player] };
                 TESTS.forEach(test => {
                     const testData = [...(newData[player][test] || [])];
                     testData.splice(sessionIndexToAdd, 0, '0.0');
@@ -346,6 +348,8 @@ const App: React.FC = () => {
         setPerformanceData(prev => {
             const newData = { ...prev };
             Object.keys(newData).forEach(player => {
+                // Create a copy of the nested player object to ensure immutability
+                newData[player] = { ...newData[player] };
                 Object.keys(newData[player]).forEach(test => {
                     const testData = [...(newData[player][test] || [])];
                     if (testData.length > sessionIndexToDelete) {
