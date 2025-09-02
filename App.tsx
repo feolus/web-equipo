@@ -9,24 +9,9 @@ import ResetModal from './components/ResetModal';
 import RankingsDashboard from './components/RankingsDashboard';
 import MatchesDashboard from './components/MatchesDashboard';
 import TrainingsDashboard from './components/TrainingsDashboard';
+import type { InitializedProps } from './index.tsx';
 
 // --- Google API Configuration ---
-declare global {
-    interface Window {
-        gapi: any;
-        google: any;
-        tokenClient: any;
-        GOOGLE_CREDS?: {
-            API_KEY: string;
-            CLIENT_ID: string;
-            SPREADSHEET_ID: string;
-        }
-    }
-}
-
-const DISCOVERY_DOC = 'https://sheets.googleapis.com/$discovery/rest?version=v4';
-const SCOPES = 'https://www.googleapis.com/auth/spreadsheets';
-
 const SHEET_NAMES = {
     performance: 'RendimientoFisico',
     matches: 'Partidos',
@@ -34,18 +19,7 @@ const SHEET_NAMES = {
 };
 
 // --- Main App Component ---
-
-const App: React.FC = () => {
-    // --- State for the new robust initialization ---
-    const [init, setInit] = useState({
-        credsReady: false,
-        gapiReady: false,
-        gsiReady: false,
-        finalized: false,
-        error: null as string | null,
-        message: 'Iniciando aplicación...',
-    });
-
+const App: React.FC<InitializedProps> = ({ gapi, tokenClient, creds }) => {
     // --- App State ---
     const [activeMainTab, setActiveMainTab] = useState<MainTab>('login');
     const [activeSubTab, setActiveSubTab] = useState<PhysicalTestTab>('datos');
@@ -62,92 +36,7 @@ const App: React.FC = () => {
     const [isSignedIn, setSignedIn] = useState(false);
     const [authStatus, setAuthStatus] = useState('Por favor, inicia sesión para guardar o cargar datos.');
     const [isProcessing, setIsProcessing] = useState(false);
-    const [spreadsheetId, setSpreadsheetId] = useState('');
-
-    // --- ROBUST INITIALIZATION ---
-
-    // Effect 1: Wait for Netlify Credentials
-    useEffect(() => {
-        setInit(prev => ({ ...prev, message: 'Esperando credenciales...' }));
-        const intervalId = setInterval(() => {
-            if (window.GOOGLE_CREDS) {
-                clearInterval(intervalId);
-                setSpreadsheetId(window.GOOGLE_CREDS.SPREADSHEET_ID);
-                setInit(prev => ({ ...prev, credsReady: true }));
-            }
-        }, 100);
-        const timeoutId = setTimeout(() => {
-            if (!window.GOOGLE_CREDS) {
-                clearInterval(intervalId);
-                setInit(prev => ({ ...prev, error: 'No se pudieron cargar las credenciales desde Netlify (timeout).' }));
-            }
-        }, 10000);
-        return () => {
-            clearInterval(intervalId);
-            clearTimeout(timeoutId);
-        };
-    }, []);
-
-    // Effect 2: Listen for Google API script load events
-    useEffect(() => {
-        setInit(prev => ({ ...prev, message: 'Cargando APIs de Google...' }));
-        const onGapiLoaded = () => setInit(prev => ({ ...prev, gapiReady: true }));
-        const onGsiLoaded = () => setInit(prev => ({ ...prev, gsiReady: true }));
-        
-        window.addEventListener('gapiLoaded', onGapiLoaded);
-        window.addEventListener('gsiLoaded', onGsiLoaded);
-
-        // Check if they are already loaded (in case event fired before listener was attached)
-        if(typeof window.gapi?.load === 'function') onGapiLoaded();
-        if(typeof window.google?.accounts?.oauth2?.initTokenClient === 'function') onGsiLoaded();
-
-        return () => {
-            window.removeEventListener('gapiLoaded', onGapiLoaded);
-            window.removeEventListener('gsiLoaded', onGsiLoaded);
-        };
-    }, []);
-
-    // Effect 3: Orchestrator - Finalize initialization when all parts are ready
-    useEffect(() => {
-        if (init.credsReady && init.gapiReady && init.gsiReady && !init.finalized) {
-            
-            const initializeClient = async () => {
-                try {
-                    setInit(prev => ({ ...prev, message: 'Inicializando cliente de Google...' }));
-                    const creds = window.GOOGLE_CREDS!;
-                    
-                    await new Promise<void>((resolve, reject) => window.gapi.load('client', {callback: resolve, onerror: reject}));
-
-                    await window.gapi.client.init({
-                        apiKey: creds.API_KEY,
-                        discoveryDocs: [DISCOVERY_DOC],
-                    });
-
-                    window.tokenClient = window.google.accounts.oauth2.initTokenClient({
-                        client_id: creds.CLIENT_ID,
-                        scope: SCOPES,
-                        callback: (resp: any) => {
-                            if (resp.error) {
-                                setAuthStatus(`Error de autenticación: ${resp.error}`);
-                                return;
-                            };
-                            setSignedIn(true);
-                            setAuthStatus('Sesión iniciada. Ya puedes guardar o cargar datos.');
-                        },
-                    });
-
-                    setInit(prev => ({ ...prev, finalized: true, message: '' }));
-                } catch (error) {
-                    const errorMessage = error instanceof Error ? error.message : String(error);
-                    console.error("Client Initialization Failed:", error);
-                    setInit(prev => ({ ...prev, error: `Error al inicializar el cliente de Google: ${errorMessage}` }));
-                }
-            };
-            
-            initializeClient();
-        }
-    }, [init.credsReady, init.gapiReady, init.gsiReady, init.finalized]);
-
+    const { SPREADSHEET_ID: spreadsheetId } = creds; // Destructure for easier access
 
     // --- Data Initialization ---
     const initializeOrResetData = useCallback(() => {
@@ -165,26 +54,31 @@ const App: React.FC = () => {
         console.log('Data has been reset to a clean state.');
     }, []);
 
+    // Initialize data once when the app is ready and mounted
     useEffect(() => {
-        if (init.finalized) {
-            initializeOrResetData();
-        }
-    }, [init.finalized, initializeOrResetData]);
+        initializeOrResetData();
+    }, [initializeOrResetData]);
     
     // --- Google API Handlers ---
     const handleSignIn = () => {
-        if (!window.tokenClient) {
-            setAuthStatus('Cliente de Google no inicializado. Por favor, recarga la página.');
-            return;
-        }
-        window.tokenClient.requestAccessToken({ prompt: 'consent' });
+        // We set the callback just before making the request to ensure it's fresh
+        tokenClient.callback = (resp: any) => {
+            if (resp.error) {
+                setAuthStatus(`Error de autenticación: ${resp.error}`);
+                return;
+            };
+            gapi.client.setToken(resp);
+            setSignedIn(true);
+            setAuthStatus('Sesión iniciada. Ya puedes guardar o cargar datos.');
+        };
+        tokenClient.requestAccessToken({ prompt: 'consent' });
     };
 
     const handleSignOut = () => {
-        const token = window.gapi.client.getToken();
+        const token = gapi.client.getToken();
         if (token !== null) {
             window.google.accounts.oauth2.revoke(token.access_token, () => {
-                window.gapi.client.setToken('');
+                gapi.client.setToken(null);
                 setSignedIn(false);
                 setAuthStatus('Por favor, inicia sesión para guardar o cargar datos.');
             });
@@ -204,19 +98,19 @@ const App: React.FC = () => {
             const matchesValues = [['ID', 'Date', 'Type', 'Opponent', 'Result', 'SquadJSON', 'GoalsJSON', 'AssistsJSON'], ...matches.map(m => [m.id, m.date, m.type, m.opponent, m.result, JSON.stringify(m.squad), JSON.stringify(m.goals), JSON.stringify(m.assists)])];
             const trainingsValues = [['Date', 'PlayerName', 'Status'], ...Object.entries(trainingData).flatMap(([date, records]) => Object.entries(records).map(([player, status]) => [date, player, status]))];
 
-            await window.gapi.client.sheets.spreadsheets.values.batchClear({
+            await gapi.client.sheets.spreadsheets.values.batchClear({
                 spreadsheetId,
-                ranges: Object.values(SHEET_NAMES),
+                resource: { ranges: Object.values(SHEET_NAMES) },
             });
             
-            await window.gapi.client.sheets.spreadsheets.values.batchUpdate({
+            await gapi.client.sheets.spreadsheets.values.batchUpdate({
                 spreadsheetId,
                 resource: {
                     valueInputOption: 'USER_ENTERED',
                     data: [
-                        { range: SHEET_NAMES.performance, values: performanceValues },
-                        { range: SHEET_NAMES.matches, values: matchesValues },
-                        { range: SHEET_NAMES.trainings, values: trainingsValues },
+                        { range: SHEET_NAMES.performance, values: performanceValues.length > 1 ? performanceValues : [[' ']] },
+                        { range: SHEET_NAMES.matches, values: matchesValues.length > 1 ? matchesValues : [[' ']] },
+                        { range: SHEET_NAMES.trainings, values: trainingsValues.length > 1 ? trainingsValues : [[' ']] },
                     ],
                 },
             });
@@ -237,7 +131,7 @@ const App: React.FC = () => {
         setIsProcessing(true);
         setAuthStatus('Cargando todos los datos...');
         try {
-            const response = await window.gapi.client.sheets.spreadsheets.values.batchGet({
+            const response = await gapi.client.sheets.spreadsheets.values.batchGet({
                 spreadsheetId,
                 ranges: Object.values(SHEET_NAMES),
             });
@@ -305,7 +199,7 @@ const App: React.FC = () => {
         }
     };
     
-    // --- UI Handlers (unchanged) ---
+    // --- UI Handlers ---
     const handlePlayerNameChange = (originalName: string, newName: string) => {
         if (!newName || newName === originalName) return false;
         if (playerNames.includes(newName)) {
@@ -395,36 +289,6 @@ const App: React.FC = () => {
     };
 
     // --- RENDER LOGIC ---
-
-    if (!init.finalized) {
-        return (
-            <div className="flex items-center justify-center h-screen">
-                {init.error ? (
-                    <div className="p-4 sm:p-8 max-w-3xl mx-auto">
-                        <div className="bg-red-50 border border-red-200 rounded-xl shadow-lg p-8 text-center">
-                            <h1 className="text-3xl font-bold text-red-800">❌ Error de Configuración</h1>
-                            <p className="mt-4 text-lg text-red-700">{init.error}</p>
-                            <div className="mt-6 text-left bg-red-100 p-4 rounded-md">
-                                <p className="font-semibold text-red-900">Por favor, revisa los siguientes puntos:</p>
-                                <ul className="list-disc list-inside mt-2 text-red-800 space-y-1">
-                                    <li>Ve a <strong>Site configuration &gt; Build & deploy &gt; Environment variables</strong> en Netlify y verifica que `API_KEY`, `CLIENT_ID`, `SPREADSHEET_ID` existan y tengan valores correctos.</li>
-                                    <li>Ve a <strong>Site configuration &gt; Build & deploy &gt; Post processing &gt; Snippet injection</strong> y asegúrate de que el script para inyectar las credenciales esté bien configurado.</li>
-                                    <li>En la <strong>Consola de Google Cloud</strong>, verifica que la API Key y el Client ID estén correctamente creados y que la URL de tu sitio Netlify esté en "Authorized JavaScript origins".</li>
-                                    <li>Después de hacer cambios, recuerda hacer un **"Trigger deploy"** en Netlify.</li>
-                                </ul>
-                            </div>
-                        </div>
-                    </div>
-                ) : (
-                    <div className="text-center" aria-live="polite">
-                        <svg className="animate-spin mx-auto h-12 w-12 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                        <p className="mt-4 text-lg text-gray-700">{init.message}</p>
-                    </div>
-                )}
-            </div>
-        );
-    }
-    
     const mainTabs: { id: MainTab, label: string, icon: string }[] = [ { id: 'login', label: 'Inicio de Sesión', icon: '🔑' }, { id: 'pruebas', label: 'Rendimiento Físico', icon: '🏋️' }, { id: 'partidos', label: 'Partidos', icon: '⚽' }, { id: 'entrenamientos', label: 'Entrenamientos', icon: '👟' } ];
     const physicalTestTabs: { id: PhysicalTestTab, label: string, icon: string }[] = [ { id: 'datos', label: 'Datos', icon: '📋' }, { id: 'individual', label: 'Informe Individual', icon: '🏃‍♂️' }, { id: 'comparativas', label: 'Comparativas', icon: '📊' }, { id: 'rankings', label: 'Rankings', icon: '📈' } ];
     const authStatusColor = isSignedIn ? 'bg-green-100 text-green-800' : authStatus.startsWith('Error') ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800';
