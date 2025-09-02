@@ -301,6 +301,8 @@ const App: React.FC = () => {
             const newData = { ...prev };
             Object.keys(newData).forEach(date => {
                 if (newData[date][originalName]) {
+                // Create a copy of the nested object to ensure React detects the change
+                newData[date] = { ...newData[date] };
                     newData[date][newName] = newData[date][originalName];
                     delete newData[date][originalName];
                 }
