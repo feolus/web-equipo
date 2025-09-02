@@ -33,44 +33,13 @@ const SHEET_NAMES = {
     trainings: 'Entrenamientos',
 };
 
-// --- Initialization Helper Functions (Promise-based) ---
-
-const waitForCredentials = (timeout = 7000): Promise<NonNullable<Window['GOOGLE_CREDS']>> => new Promise((resolve, reject) => {
-    const check = () => {
-        if (window.GOOGLE_CREDS) {
-            const { API_KEY, CLIENT_ID, SPREADSHEET_ID } = window.GOOGLE_CREDS;
-            if (API_KEY && CLIENT_ID && SPREADSHEET_ID) {
-                return resolve(window.GOOGLE_CREDS);
-            }
-        }
-        return false;
-    };
-    if (check()) return;
-    const intervalId = setInterval(() => check() && clearInterval(intervalId), 100);
-    setTimeout(() => {
-        clearInterval(intervalId);
-        reject(new Error("No se pudieron cargar las credenciales. Verifica la configuración de 'Snippet Injection' en Netlify."));
-    }, timeout);
-});
-
-const waitForScripts = (): Promise<[void, void]> => {
-    const gapiPromise = new Promise<void>(resolve => {
-        if (typeof window.gapi?.load === 'function') return resolve();
-        window.addEventListener('gapiLoaded', () => resolve(), { once: true });
-    });
-    const gsiPromise = new Promise<void>(resolve => {
-        if (typeof window.google?.accounts?.oauth2?.initTokenClient === 'function') return resolve();
-        window.addEventListener('gsiLoaded', () => resolve(), { once: true });
-    });
-    return Promise.all([gapiPromise, gsiPromise]);
-};
 
 // --- Main App Component ---
 
 const App: React.FC = () => {
     // --- Initialization State ---
     const [initStatus, setInitStatus] = useState<'loading' | 'ready' | 'error'>('loading');
-    const [initMessage, setInitMessage] = useState('Esperando credenciales...');
+    const [initMessage, setInitMessage] = useState('Iniciando aplicación...');
     const [initError, setInitError] = useState<string | null>(null);
 
     // --- App State ---
@@ -91,56 +60,83 @@ const App: React.FC = () => {
     const [isProcessing, setIsProcessing] = useState(false);
     const [spreadsheetId, setSpreadsheetId] = useState('');
 
-    // --- SINGLE INITIALIZATION EFFECT ---
+    // --- ROBUST INITIALIZATION EFFECT ---
     useEffect(() => {
-        const initializeApp = async () => {
-            try {
-                // Step 1: Wait for credentials
-                const creds = await waitForCredentials();
-                setSpreadsheetId(creds.SPREADSHEET_ID);
-                setInitMessage('Cargando APIs de Google...');
+        let initAttempted = false;
+        
+        setInitMessage("Esperando credenciales...");
 
-                // Step 2: Wait for Google's scripts
-                await waitForScripts();
-                setInitMessage('Inicializando cliente de Google...');
+        const supervisorInterval = setInterval(async () => {
+            const creds = window.GOOGLE_CREDS;
+            const gapiReady = typeof window.gapi?.load === 'function';
+            const gsiReady = typeof window.google?.accounts?.oauth2?.initTokenClient === 'function';
 
-                // Step 3: Initialize GAPI and GSI clients
-                await new Promise<void>((resolve, reject) => {
-                    window.gapi.load('client', () => {
-                        window.gapi.client.init({
-                            apiKey: creds.API_KEY,
-                            discoveryDocs: [DISCOVERY_DOC],
-                        }).then(() => {
-                            window.tokenClient = window.google.accounts.oauth2.initTokenClient({
-                                client_id: creds.CLIENT_ID,
-                                scope: SCOPES,
-                                callback: (resp: any) => {
-                                    if (resp.error) {
-                                        setAuthStatus(`Error de autenticación: ${resp.error}`);
-                                        return;
-                                    };
-                                    setSignedIn(true);
-                                    setAuthStatus('Sesión iniciada. Ya puedes guardar o cargar datos.');
-                                },
-                            });
-                            resolve();
-                        }).catch(reject);
+            if (creds && gapiReady && gsiReady && !initAttempted) {
+                clearInterval(supervisorInterval); // Stop polling
+                initAttempted = true;
+
+                try {
+                    setInitMessage('Inicializando cliente de Google...');
+                    
+                    await new Promise<void>((resolve, reject) => {
+                        window.gapi.load('client', () => {
+                            window.gapi.client.init({
+                                apiKey: creds.API_KEY,
+                                discoveryDocs: [DISCOVERY_DOC],
+                            }).then(() => {
+                                window.tokenClient = window.google.accounts.oauth2.initTokenClient({
+                                    client_id: creds.CLIENT_ID,
+                                    scope: SCOPES,
+                                    callback: (resp: any) => {
+                                        if (resp.error) {
+                                            setAuthStatus(`Error de autenticación: ${resp.error}`);
+                                            return;
+                                        };
+                                        setSignedIn(true);
+                                        setAuthStatus('Sesión iniciada. Ya puedes guardar o cargar datos.');
+                                    },
+                                });
+                                resolve();
+                            }).catch(reject);
+                        });
                     });
-                });
 
-                // Step 4: Initialization complete
-                setInitMessage('');
-                setInitStatus('ready');
+                    setSpreadsheetId(creds.SPREADSHEET_ID);
+                    setInitMessage('');
+                    setInitStatus('ready');
 
-            } catch (error) {
-                console.error("Initialization Failed:", error);
-                setInitError(error instanceof Error ? error.message : String(error));
+                } catch (error) {
+                    console.error("Initialization Failed:", error);
+                    setInitError(error instanceof Error ? error.message : String(error));
+                    setInitStatus('error');
+                }
+            } else if (!creds) {
+                 setInitMessage("Esperando credenciales de Netlify...");
+            } else if (!gapiReady || !gsiReady) {
+                 setInitMessage("Cargando APIs de Google...");
+            }
+
+        }, 100); // Poll every 100ms
+
+        // Timeout to prevent infinite loop
+        const timeoutId = setTimeout(() => {
+            clearInterval(supervisorInterval);
+            if (!initAttempted) {
+                let errorMsg = "La inicialización ha tardado demasiado. ";
+                if (!window.GOOGLE_CREDS) errorMsg += "Fallo al cargar las credenciales de Netlify. ";
+                if (typeof window.gapi?.load !== 'function') errorMsg += "Fallo al cargar la API de Google. ";
+                if (typeof window.google?.accounts?.oauth2?.initTokenClient !== 'function') errorMsg += "Fallo al cargar el servicio de autenticación. ";
+                setInitError(errorMsg + "Revisa la consola del navegador para más detalles.");
                 setInitStatus('error');
             }
-        };
+        }, 10000); // 10 second timeout
 
-        initializeApp();
-    }, []);
+        // Cleanup function
+        return () => {
+            clearInterval(supervisorInterval);
+            clearTimeout(timeoutId);
+        };
+    }, []); // Empty dependency array ensures this runs only once on mount
 
 
     // --- Data Initialization ---
