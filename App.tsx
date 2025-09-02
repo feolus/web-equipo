@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { INITIAL_PLAYER_COUNT, TESTS } from './constants';
 import type { PerformanceData, MainTab, PhysicalTestTab, Match, TrainingData } from './types';
@@ -9,7 +8,6 @@ import ResetModal from './components/ResetModal';
 import RankingsDashboard from './components/RankingsDashboard';
 import MatchesDashboard from './components/MatchesDashboard';
 import TrainingsDashboard from './components/TrainingsDashboard';
-import type { InitializedProps } from './index.tsx';
 
 // --- Google API Configuration ---
 const SHEET_NAMES = {
@@ -17,9 +15,24 @@ const SHEET_NAMES = {
     matches: 'Partidos',
     trainings: 'Entrenamientos',
 };
+type ApiState = 'idle' | 'initializing' | 'ready' | 'error';
+
+// --- Helper function to load scripts dynamically ---
+function loadScript(src: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.async = true;
+        script.defer = true;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+        document.head.appendChild(script);
+    });
+}
+
 
 // --- Main App Component ---
-const App: React.FC<InitializedProps> = ({ gapi, tokenClient, creds }) => {
+const App: React.FC = () => {
     // --- App State ---
     const [activeMainTab, setActiveMainTab] = useState<MainTab>('login');
     const [activeSubTab, setActiveSubTab] = useState<PhysicalTestTab>('datos');
@@ -32,11 +45,15 @@ const App: React.FC<InitializedProps> = ({ gapi, tokenClient, creds }) => {
     const [matches, setMatches] = useState<Match[]>([]);
     const [trainingData, setTrainingData] = useState<TrainingData>({});
 
-    // --- Google Auth State ---
+    // --- Google API & Auth State ---
+    const [apiState, setApiState] = useState<ApiState>('idle');
+    const [apiError, setApiError] = useState<string | null>(null);
+    const [gapiClient, setGapiClient] = useState<any>(null);
+    const [tokenClient, setTokenClient] = useState<any>(null);
     const [isSignedIn, setSignedIn] = useState(false);
-    const [authStatus, setAuthStatus] = useState('Por favor, inicia sesión para guardar o cargar datos.');
+    const [authStatus, setAuthStatus] = useState('Prepara la conexión para empezar.');
     const [isProcessing, setIsProcessing] = useState(false);
-    const { SPREADSHEET_ID: spreadsheetId } = creds; // Destructure for easier access
+    
 
     // --- Data Initialization ---
     const initializeOrResetData = useCallback(() => {
@@ -54,20 +71,68 @@ const App: React.FC<InitializedProps> = ({ gapi, tokenClient, creds }) => {
         console.log('Data has been reset to a clean state.');
     }, []);
 
-    // Initialize data once when the app is ready and mounted
     useEffect(() => {
         initializeOrResetData();
     }, [initializeOrResetData]);
+
+    // --- Google API Manual Initialization ---
+    const handlePrepareConnection = async () => {
+        setApiState('initializing');
+        setApiError(null);
+        setAuthStatus('Cargando APIs de Google...');
+
+        const creds = window.GOOGLE_CREDS;
+        if (!creds || !creds.API_KEY) {
+            setApiState('error');
+            setApiError("No se pudieron cargar las credenciales. Revisa la 'Snippet Injection' en Netlify.");
+            return;
+        }
+
+        try {
+            await Promise.all([
+                loadScript('https://apis.google.com/js/api.js'),
+                loadScript('https://accounts.google.com/gsi/client'),
+            ]);
+
+            await new Promise<void>((resolve, reject) => window.gapi.load('client', {
+                callback: resolve,
+                onerror: reject,
+                timeout: 5000,
+                ontimeout: () => reject(new Error('gapi.client.load timed out.'))
+            }));
+            
+            await window.gapi.client.init({
+                apiKey: creds.API_KEY,
+                discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
+            });
+
+            const client = window.google.accounts.oauth2.initTokenClient({
+                client_id: creds.CLIENT_ID,
+                scope: 'https://www.googleapis.com/auth/spreadsheets',
+                callback: () => {}, // This will be set dynamically before use
+            });
+            
+            setGapiClient(window.gapi);
+            setTokenClient(client);
+            setApiState('ready');
+            setAuthStatus('Por favor, inicia sesión para guardar o cargar datos.');
+        } catch (err: any) {
+            const message = err instanceof Error ? err.message : String(err);
+            setApiError(`Error de inicialización: ${message}`);
+            setApiState('error');
+            console.error(err);
+        }
+    };
     
     // --- Google API Handlers ---
     const handleSignIn = () => {
-        // We set the callback just before making the request to ensure it's fresh
+        if (!tokenClient) return;
         tokenClient.callback = (resp: any) => {
             if (resp.error) {
                 setAuthStatus(`Error de autenticación: ${resp.error}`);
                 return;
             };
-            gapi.client.setToken(resp);
+            gapiClient.client.setToken(resp);
             setSignedIn(true);
             setAuthStatus('Sesión iniciada. Ya puedes guardar o cargar datos.');
         };
@@ -75,10 +140,11 @@ const App: React.FC<InitializedProps> = ({ gapi, tokenClient, creds }) => {
     };
 
     const handleSignOut = () => {
-        const token = gapi.client.getToken();
+        if (!gapiClient) return;
+        const token = gapiClient.client.getToken();
         if (token !== null) {
             window.google.accounts.oauth2.revoke(token.access_token, () => {
-                gapi.client.setToken(null);
+                gapiClient.client.setToken(null);
                 setSignedIn(false);
                 setAuthStatus('Por favor, inicia sesión para guardar o cargar datos.');
             });
@@ -87,23 +153,26 @@ const App: React.FC<InitializedProps> = ({ gapi, tokenClient, creds }) => {
 
     // --- Data Persistence ---
     const saveDataToSheet = async () => {
-        if (!isSignedIn) {
+        if (!isSignedIn || !gapiClient) {
             setAuthStatus('Debes iniciar sesión para guardar datos.');
             return;
         }
         setIsProcessing(true);
         setAuthStatus('Guardando todos los datos...');
         try {
+            const spreadsheetId = window.GOOGLE_CREDS?.SPREADSHEET_ID;
+            if (!spreadsheetId) throw new Error("Spreadsheet ID no encontrado.");
+
             const performanceValues = [['Player', 'Test', 'SessionDate', 'Value'], ...playerNames.flatMap(player => TESTS.flatMap(test => sessionLabels.map((session, idx) => [player, test, session, performanceData[player]?.[test]?.[idx] || '0.0'])))];
             const matchesValues = [['ID', 'Date', 'Type', 'Opponent', 'Result', 'SquadJSON', 'GoalsJSON', 'AssistsJSON'], ...matches.map(m => [m.id, m.date, m.type, m.opponent, m.result, JSON.stringify(m.squad), JSON.stringify(m.goals), JSON.stringify(m.assists)])];
             const trainingsValues = [['Date', 'PlayerName', 'Status'], ...Object.entries(trainingData).flatMap(([date, records]) => Object.entries(records).map(([player, status]) => [date, player, status]))];
 
-            await gapi.client.sheets.spreadsheets.values.batchClear({
+            await gapiClient.client.sheets.spreadsheets.values.batchClear({
                 spreadsheetId,
                 resource: { ranges: Object.values(SHEET_NAMES) },
             });
             
-            await gapi.client.sheets.spreadsheets.values.batchUpdate({
+            await gapiClient.client.sheets.spreadsheets.values.batchUpdate({
                 spreadsheetId,
                 resource: {
                     valueInputOption: 'USER_ENTERED',
@@ -124,14 +193,17 @@ const App: React.FC<InitializedProps> = ({ gapi, tokenClient, creds }) => {
     };
 
     const loadDataFromSheet = async () => {
-        if (!isSignedIn) {
+        if (!isSignedIn || !gapiClient) {
             setAuthStatus('Debes iniciar sesión para cargar datos.');
             return;
         }
         setIsProcessing(true);
         setAuthStatus('Cargando todos los datos...');
         try {
-            const response = await gapi.client.sheets.spreadsheets.values.batchGet({
+            const spreadsheetId = window.GOOGLE_CREDS?.SPREADSHEET_ID;
+            if (!spreadsheetId) throw new Error("Spreadsheet ID no encontrado.");
+            
+            const response = await gapiClient.client.sheets.spreadsheets.values.batchGet({
                 spreadsheetId,
                 ranges: Object.values(SHEET_NAMES),
             });
@@ -291,7 +363,46 @@ const App: React.FC<InitializedProps> = ({ gapi, tokenClient, creds }) => {
     // --- RENDER LOGIC ---
     const mainTabs: { id: MainTab, label: string, icon: string }[] = [ { id: 'login', label: 'Inicio de Sesión', icon: '🔑' }, { id: 'pruebas', label: 'Rendimiento Físico', icon: '🏋️' }, { id: 'partidos', label: 'Partidos', icon: '⚽' }, { id: 'entrenamientos', label: 'Entrenamientos', icon: '👟' } ];
     const physicalTestTabs: { id: PhysicalTestTab, label: string, icon: string }[] = [ { id: 'datos', label: 'Datos', icon: '📋' }, { id: 'individual', label: 'Informe Individual', icon: '🏃‍♂️' }, { id: 'comparativas', label: 'Comparativas', icon: '📊' }, { id: 'rankings', label: 'Rankings', icon: '📈' } ];
-    const authStatusColor = isSignedIn ? 'bg-green-100 text-green-800' : authStatus.startsWith('Error') ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800';
+    
+    let authStatusColor = 'bg-yellow-100 text-yellow-800';
+    if (apiState === 'ready') {
+        authStatusColor = isSignedIn ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800';
+    } else if (apiState === 'error') {
+        authStatusColor = 'bg-red-100 text-red-800';
+    }
+
+
+    const renderAuthContent = () => {
+        switch (apiState) {
+            case 'idle':
+                return <button onClick={handlePrepareConnection} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition-colors text-base">Preparar Conexión con Google</button>;
+            case 'initializing':
+            case 'ready':
+                return (
+                    <>
+                        <div className="space-y-3">
+                            {!isSignedIn ? ( <button onClick={handleSignIn} disabled={isProcessing} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base"> Iniciar sesión con Google </button> ) : ( <button onClick={handleSignOut} disabled={isProcessing} className="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base"> Cerrar Sesión </button> )}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <button onClick={saveDataToSheet} disabled={!isSignedIn || isProcessing} className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Guardar en Sheets</button>
+                                <button onClick={loadDataFromSheet} disabled={!isSignedIn || isProcessing} className="w-full bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Cargar desde Sheets</button>
+                            </div>
+                        </div>
+                        <div className="mt-8 border-t pt-6">
+                            <p className="text-sm text-gray-500 mb-3">Si deseas empezar de cero, puedes resetear todos los datos locales.</p>
+                            <button onClick={() => setResetModalOpen(true)} className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg transition-colors"> Resetear Datos Locales </button>
+                        </div>
+                    </>
+                );
+            case 'error':
+                 return (
+                    <div className="text-center text-red-800">
+                        <p className="font-bold mb-2">¡Oh no! Algo salió mal.</p>
+                        <p className="text-sm">{apiError}</p>
+                        <button onClick={handlePrepareConnection} className="mt-4 w-full bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition-colors text-sm">Intentar de Nuevo</button>
+                    </div>
+                 );
+        }
+    };
 
     return (
         <div className="p-2 sm:p-6 md:p-8">
@@ -313,21 +424,11 @@ const App: React.FC<InitializedProps> = ({ gapi, tokenClient, creds }) => {
                     <div className="p-4 sm:p-6 md:p-8 flex items-center justify-center" style={{ minHeight: '60vh' }}>
                         <div className="max-w-md w-full text-center bg-gray-50 p-8 rounded-xl shadow-md">
                             <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-4">🔑 Gestión de Datos</h1>
-                            <p className="text-gray-600 mb-6">Inicia sesión con tu cuenta de Google para guardar y cargar los datos de la aplicación en una hoja de cálculo.</p>
+                            <p className="text-gray-600 mb-6">Conecta la aplicación con tu cuenta de Google para guardar y cargar datos.</p>
                             <div className={`mb-6 p-4 rounded-lg transition-colors text-sm font-medium ${authStatusColor}`}>
-                                {isProcessing ? ( <div className="flex items-center justify-center"> <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> {authStatus} </div> ) : ( authStatus )}
+                                {isProcessing || apiState === 'initializing' ? ( <div className="flex items-center justify-center"> <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> {authStatus} </div> ) : ( authStatus )}
                             </div>
-                            <div className="space-y-3">
-                                {!isSignedIn ? ( <button onClick={handleSignIn} disabled={isProcessing} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base"> Iniciar sesión con Google </button> ) : ( <button onClick={handleSignOut} disabled={isProcessing} className="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base"> Cerrar Sesión </button> )}
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <button onClick={saveDataToSheet} disabled={!isSignedIn || isProcessing} className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Guardar en Sheets</button>
-                                    <button onClick={loadDataFromSheet} disabled={!isSignedIn || isProcessing} className="w-full bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Cargar desde Sheets</button>
-                                </div>
-                            </div>
-                            <div className="mt-8 border-t pt-6">
-                                <p className="text-sm text-gray-500 mb-3">Si deseas empezar de cero, puedes resetear todos los datos locales.</p>
-                                <button onClick={() => setResetModalOpen(true)} className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg transition-colors"> Resetear Datos Locales </button>
-                            </div>
+                            {renderAuthContent()}
                         </div>
                     </div>
                 )}
