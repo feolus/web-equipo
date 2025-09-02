@@ -33,14 +33,45 @@ const SHEET_NAMES = {
     trainings: 'Entrenamientos',
 };
 
+// --- Initialization Helper Functions (Promise-based) ---
+
+const waitForCredentials = (timeout = 7000): Promise<NonNullable<Window['GOOGLE_CREDS']>> => new Promise((resolve, reject) => {
+    const check = () => {
+        if (window.GOOGLE_CREDS) {
+            const { API_KEY, CLIENT_ID, SPREADSHEET_ID } = window.GOOGLE_CREDS;
+            if (API_KEY && CLIENT_ID && SPREADSHEET_ID) {
+                return resolve(window.GOOGLE_CREDS);
+            }
+        }
+        return false;
+    };
+    if (check()) return;
+    const intervalId = setInterval(() => check() && clearInterval(intervalId), 100);
+    setTimeout(() => {
+        clearInterval(intervalId);
+        reject(new Error("No se pudieron cargar las credenciales. Verifica la configuración de 'Snippet Injection' en Netlify."));
+    }, timeout);
+});
+
+const waitForScripts = (): Promise<[void, void]> => {
+    const gapiPromise = new Promise<void>(resolve => {
+        if (typeof window.gapi?.load === 'function') return resolve();
+        window.addEventListener('gapiLoaded', () => resolve(), { once: true });
+    });
+    const gsiPromise = new Promise<void>(resolve => {
+        if (typeof window.google?.accounts?.oauth2?.initTokenClient === 'function') return resolve();
+        window.addEventListener('gsiLoaded', () => resolve(), { once: true });
+    });
+    return Promise.all([gapiPromise, gsiPromise]);
+};
+
+// --- Main App Component ---
+
 const App: React.FC = () => {
-    // --- Loading and Initialization State ---
-    const [loadingStage, setLoadingStage] = useState('Cargando credenciales...');
-    const [creds, setCreds] = useState<{ API_KEY: string; CLIENT_ID: string; SPREADSHEET_ID: string } | null>(null);
-    const [credsError, setCredsError] = useState<string | null>(null);
-    const [gapiScriptLoaded, setGapiScriptLoaded] = useState(false);
-    const [gsiScriptLoaded, setGsiScriptLoaded] = useState(false);
-    const [isGapiClientReady, setGapiClientReady] = useState(false);
+    // --- Initialization State ---
+    const [initStatus, setInitStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+    const [initMessage, setInitMessage] = useState('Esperando credenciales...');
+    const [initError, setInitError] = useState<string | null>(null);
 
     // --- App State ---
     const [activeMainTab, setActiveMainTab] = useState<MainTab>('login');
@@ -58,94 +89,59 @@ const App: React.FC = () => {
     const [isSignedIn, setSignedIn] = useState(false);
     const [authStatus, setAuthStatus] = useState('Por favor, inicia sesión para guardar o cargar datos.');
     const [isProcessing, setIsProcessing] = useState(false);
-    
-    // --- STEP 1: Poll for credentials injected by Netlify ---
+    const [spreadsheetId, setSpreadsheetId] = useState('');
+
+    // --- SINGLE INITIALIZATION EFFECT ---
     useEffect(() => {
-        const checkCreds = () => {
-            if (window.GOOGLE_CREDS) {
-                const { API_KEY, CLIENT_ID, SPREADSHEET_ID } = window.GOOGLE_CREDS;
-                if (API_KEY && CLIENT_ID && SPREADSHEET_ID) {
-                    setCreds({ API_KEY, CLIENT_ID, SPREADSHEET_ID });
-                    setLoadingStage('Cargando APIs de Google...');
-                } else {
-                    setCredsError("Una o más variables de entorno (API_KEY, CLIENT_ID, SPREADSHEET_ID) están vacías. Revisa la configuración en Netlify.");
-                }
-                return true; // Stop polling
+        const initializeApp = async () => {
+            try {
+                // Step 1: Wait for credentials
+                const creds = await waitForCredentials();
+                setSpreadsheetId(creds.SPREADSHEET_ID);
+                setInitMessage('Cargando APIs de Google...');
+
+                // Step 2: Wait for Google's scripts
+                await waitForScripts();
+                setInitMessage('Inicializando cliente de Google...');
+
+                // Step 3: Initialize GAPI and GSI clients
+                await new Promise<void>((resolve, reject) => {
+                    window.gapi.load('client', () => {
+                        window.gapi.client.init({
+                            apiKey: creds.API_KEY,
+                            discoveryDocs: [DISCOVERY_DOC],
+                        }).then(() => {
+                            window.tokenClient = window.google.accounts.oauth2.initTokenClient({
+                                client_id: creds.CLIENT_ID,
+                                scope: SCOPES,
+                                callback: (resp: any) => {
+                                    if (resp.error) {
+                                        setAuthStatus(`Error de autenticación: ${resp.error}`);
+                                        return;
+                                    };
+                                    setSignedIn(true);
+                                    setAuthStatus('Sesión iniciada. Ya puedes guardar o cargar datos.');
+                                },
+                            });
+                            resolve();
+                        }).catch(reject);
+                    });
+                });
+
+                // Step 4: Initialization complete
+                setInitMessage('');
+                setInitStatus('ready');
+
+            } catch (error) {
+                console.error("Initialization Failed:", error);
+                setInitError(error instanceof Error ? error.message : String(error));
+                setInitStatus('error');
             }
-            return false; // Continue polling
         };
 
-        if (checkCreds()) return;
-
-        const intervalId = setInterval(() => {
-            if (checkCreds()) clearInterval(intervalId);
-        }, 100);
-
-        const timeoutId = setTimeout(() => {
-            clearInterval(intervalId);
-            if (!creds && !credsError) {
-                setCredsError("No se pudieron cargar las credenciales. Verifica la configuración de 'Snippet Injection' en Netlify.");
-            }
-        }, 5000); // 5-second timeout
-
-        return () => {
-            clearInterval(intervalId);
-            clearTimeout(timeoutId);
-        };
+        initializeApp();
     }, []);
 
-    // --- STEP 2: Wait for Google API scripts to load ---
-    useEffect(() => {
-        const handleGapiLoad = () => setGapiScriptLoaded(true);
-        const handleGsiLoad = () => setGsiScriptLoaded(true);
-        
-        // Add event listeners
-        window.addEventListener('gapiLoaded', handleGapiLoad);
-        window.addEventListener('gsiLoaded', handleGsiLoad);
-        
-        // Check if already loaded (e.g., from cache)
-        if (typeof window.gapi?.load === 'function') handleGapiLoad();
-        if (typeof window.google?.accounts?.oauth2?.initTokenClient === 'function') handleGsiLoad();
-
-        return () => {
-            window.removeEventListener('gapiLoaded', handleGapiLoad);
-            window.removeEventListener('gsiLoaded', handleGsiLoad);
-        };
-    }, []);
-
-    // --- STEP 3: Initialize Google API clients when everything is ready ---
-    useEffect(() => {
-        if (creds && gapiScriptLoaded && gsiScriptLoaded) {
-            setLoadingStage('Inicializando cliente de Google...');
-
-            // Init GAPI (for Sheets API)
-            window.gapi.load('client', async () => {
-                try {
-                    await window.gapi.client.init({
-                        apiKey: creds.API_KEY,
-                        discoveryDocs: [DISCOVERY_DOC],
-                    });
-                    
-                    // Init GSI (for Auth)
-                    window.tokenClient = window.google.accounts.oauth2.initTokenClient({
-                        client_id: creds.CLIENT_ID,
-                        scope: SCOPES,
-                        callback: (resp: any) => {
-                            if (resp.error) throw resp;
-                            setSignedIn(true);
-                            setAuthStatus('Sesión iniciada. Ya puedes guardar o cargar datos.');
-                        },
-                    });
-
-                    setGapiClientReady(true);
-                    setLoadingStage(''); // Clear loading stage, we are done
-                } catch (error) {
-                    console.error("Error initializing Google clients:", error);
-                    setCredsError("Error al inicializar las APIs de Google. Revisa la consola para más detalles.");
-                }
-            });
-        }
-    }, [creds, gapiScriptLoaded, gsiScriptLoaded]);
 
     // --- Data Initialization ---
     const initializeOrResetData = useCallback(() => {
@@ -164,13 +160,15 @@ const App: React.FC = () => {
     }, []);
 
     useEffect(() => {
-        initializeOrResetData();
-    }, [initializeOrResetData]);
+        if (initStatus === 'ready') {
+            initializeOrResetData();
+        }
+    }, [initStatus, initializeOrResetData]);
     
     // --- Google API Handlers ---
     const handleSignIn = () => {
-        if (!isGapiClientReady || !window.tokenClient) {
-            setAuthStatus('La API de Google no está lista. Por favor, espera un momento.');
+        if (!window.tokenClient) {
+            setAuthStatus('Cliente de Google no inicializado. Por favor, recarga la página.');
             return;
         }
         window.tokenClient.requestAccessToken({ prompt: 'consent' });
@@ -189,8 +187,8 @@ const App: React.FC = () => {
 
     // --- Data Persistence ---
     const saveDataToSheet = async () => {
-        if (!isSignedIn || !creds?.SPREADSHEET_ID) {
-            setAuthStatus('Debes iniciar sesión y tener un ID de hoja de cálculo válido.');
+        if (!isSignedIn) {
+            setAuthStatus('Debes iniciar sesión para guardar datos.');
             return;
         }
         setIsProcessing(true);
@@ -201,12 +199,12 @@ const App: React.FC = () => {
             const trainingsValues = [['Date', 'PlayerName', 'Status'], ...Object.entries(trainingData).flatMap(([date, records]) => Object.entries(records).map(([player, status]) => [date, player, status]))];
 
             await window.gapi.client.sheets.spreadsheets.values.batchClear({
-                spreadsheetId: creds.SPREADSHEET_ID,
+                spreadsheetId,
                 ranges: Object.values(SHEET_NAMES),
             });
             
             await window.gapi.client.sheets.spreadsheets.values.batchUpdate({
-                spreadsheetId: creds.SPREADSHEET_ID,
+                spreadsheetId,
                 resource: {
                     valueInputOption: 'USER_ENTERED',
                     data: [
@@ -226,15 +224,15 @@ const App: React.FC = () => {
     };
 
     const loadDataFromSheet = async () => {
-        if (!isSignedIn || !creds?.SPREADSHEET_ID) {
-            setAuthStatus('Debes iniciar sesión y tener un ID de hoja de cálculo válido.');
+        if (!isSignedIn) {
+            setAuthStatus('Debes iniciar sesión para cargar datos.');
             return;
         }
         setIsProcessing(true);
         setAuthStatus('Cargando todos los datos...');
         try {
             const response = await window.gapi.client.sheets.spreadsheets.values.batchGet({
-                spreadsheetId: creds.SPREADSHEET_ID,
+                spreadsheetId,
                 ranges: Object.values(SHEET_NAMES),
             });
 
@@ -267,6 +265,8 @@ const App: React.FC = () => {
                 setPlayerNames(loadedPlayerNames);
                 setSessionLabels(loadedSessionLabels);
                 setPerformanceData(finalPerfData);
+            } else {
+                 initializeOrResetData();
             }
 
             const matchRows = results.find(r => r.range.startsWith(SHEET_NAMES.matches))?.values;
@@ -390,30 +390,30 @@ const App: React.FC = () => {
 
     // --- RENDER LOGIC ---
 
-    if (loadingStage) {
+    if (initStatus === 'loading') {
         return (
-            <div className="flex items-center justify-center h-screen" aria-label="Cargando aplicación">
+            <div className="flex items-center justify-center h-screen" aria-live="polite">
                 <div className="text-center">
                     <svg className="animate-spin mx-auto h-12 w-12 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    <p className="mt-4 text-lg text-gray-700">{loadingStage}</p>
+                    <p className="mt-4 text-lg text-gray-700">{initMessage}</p>
                 </div>
             </div>
         );
     }
 
-    if (credsError) {
+    if (initStatus === 'error') {
         return (
             <div className="p-4 sm:p-8">
                 <div className="max-w-3xl mx-auto bg-red-50 border border-red-200 rounded-xl shadow-lg p-8 text-center">
                     <h1 className="text-3xl font-bold text-red-800">❌ Error de Configuración</h1>
-                    <p className="mt-4 text-lg text-red-700">{credsError}</p>
+                    <p className="mt-4 text-lg text-red-700">{initError}</p>
                     <div className="mt-6 text-left bg-red-100 p-4 rounded-md">
-                        <p className="font-semibold text-red-900">Por favor, revisa los siguientes puntos en tu configuración de Netlify:</p>
+                        <p className="font-semibold text-red-900">Por favor, revisa los siguientes puntos:</p>
                         <ul className="list-disc list-inside mt-2 text-red-800 space-y-1">
-                            <li>Ve a <strong>Site configuration &gt; Build & deploy &gt; Environment</strong>.</li>
-                            <li>Asegúrate de que las <strong>variables de entorno</strong> (`API_KEY`, `CLIENT_ID`, `SPREADSHEET_ID`) existan y tengan un valor correcto.</li>
-                            <li>Ve a <strong>Site configuration &gt; Build & deploy &gt; Post processing &gt; Snippet injection</strong> y verifica que el script de inyección esté configurado.</li>
-                            <li>Después de hacer cambios, recuerda hacer un **"Trigger deploy"** para que se apliquen.</li>
+                            <li>Ve a <strong>Site configuration &gt; Build & deploy &gt; Environment variables</strong> en Netlify y verifica que `API_KEY`, `CLIENT_ID`, `SPREADSHEET_ID` existan y tengan valores correctos.</li>
+                            <li>Ve a <strong>Site configuration &gt; Build & deploy &gt; Post processing &gt; Snippet injection</strong> y asegúrate de que el script para inyectar las credenciales esté bien configurado.</li>
+                            <li>En la <strong>Consola de Google Cloud</strong>, verifica que la API Key y el Client ID estén correctamente creados y que la URL de tu sitio Netlify esté en "Authorized JavaScript origins".</li>
+                            <li>Después de hacer cambios, recuerda hacer un **"Trigger deploy"** en Netlify.</li>
                         </ul>
                     </div>
                 </div>
@@ -450,7 +450,7 @@ const App: React.FC = () => {
                                 {isProcessing ? ( <div className="flex items-center justify-center"> <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> {authStatus} </div> ) : ( authStatus )}
                             </div>
                             <div className="space-y-3">
-                                {!isSignedIn ? ( <button onClick={handleSignIn} disabled={!isGapiClientReady || isProcessing} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base"> Iniciar sesión con Google </button> ) : ( <button onClick={handleSignOut} disabled={isProcessing} className="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base"> Cerrar Sesión </button> )}
+                                {!isSignedIn ? ( <button onClick={handleSignIn} disabled={isProcessing} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base"> Iniciar sesión con Google </button> ) : ( <button onClick={handleSignOut} disabled={isProcessing} className="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base"> Cerrar Sesión </button> )}
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     <button onClick={saveDataToSheet} disabled={!isSignedIn || isProcessing} className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Guardar en Sheets</button>
                                     <button onClick={loadDataFromSheet} disabled={!isSignedIn || isProcessing} className="w-full bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Cargar desde Sheets</button>
