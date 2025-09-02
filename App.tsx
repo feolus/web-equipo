@@ -152,7 +152,7 @@ const App: React.FC = () => {
     };
 
     // --- Data Persistence ---
-    const saveDataToSheet = async () => {
+    const saveDataToSheet = useCallback(async () => {
         if (!isSignedIn || !gapiClient) {
             setAuthStatus('Debes iniciar sesión para guardar datos.');
             return;
@@ -190,9 +190,9 @@ const App: React.FC = () => {
         } finally {
             setIsProcessing(false);
         }
-    };
+    }, [isSignedIn, gapiClient, playerNames, sessionLabels, performanceData, matches, trainingData]);
 
-    const loadDataFromSheet = async () => {
+    const loadDataFromSheet = useCallback(async () => {
         if (!isSignedIn || !gapiClient) {
             setAuthStatus('Debes iniciar sesión para cargar datos.');
             return;
@@ -269,7 +269,7 @@ const App: React.FC = () => {
         } finally {
             setIsProcessing(false);
         }
-    };
+    }, [isSignedIn, gapiClient, initializeOrResetData]);
     
     // --- UI Handlers ---
     const handlePlayerNameChange = (originalName: string, newName: string) => {
