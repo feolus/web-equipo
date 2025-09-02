@@ -473,6 +473,14 @@ const App: React.FC = () => {
                 {activeMainTab === 'entrenamientos' && ( <div className="p-4 sm:p-6"> <TrainingsDashboard playerNames={playerNames} trainingData={trainingData} setTrainingData={setTrainingData} /> </div> )}
             </div>
             <ResetModal isOpen={isResetModalOpen} onClose={() => setResetModalOpen(false)} onConfirm={confirmReset} />
+
+            {/* --- Temporary Debug View --- */}
+            <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: 'rgba(0,0,0,0.8)', color: 'white', padding: '10px', zIndex: 9999, maxHeight: '200px', overflowY: 'auto' }}>
+                <h3 style={{ margin: 0, paddingBottom: '5px' }}>Debug Info:</h3>
+                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                    Player Names: {JSON.stringify(playerNames)}
+                </pre>
+            </div>
         </div>
     );
 };
