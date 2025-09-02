@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { INITIAL_PLAYER_COUNT, TESTS } from './constants';
 import type { PerformanceData, MainTab, PhysicalTestTab, Match, TrainingData } from './types';
 import DataTable from './components/DataTable';
@@ -54,6 +54,13 @@ const App: React.FC = () => {
     const [authStatus, setAuthStatus] = useState('Prepara la conexión para empezar.');
     const [isProcessing, setIsProcessing] = useState(false);
     
+    // --- Ref for State ---
+    // This ref holds a direct reference to the latest data state,
+    // bypassing potential stale closures in callbacks.
+    const dataRef = useRef({ playerNames, sessionLabels, performanceData, matches, trainingData });
+    useEffect(() => {
+        dataRef.current = { playerNames, sessionLabels, performanceData, matches, trainingData };
+    }, [playerNames, sessionLabels, performanceData, matches, trainingData]);
 
     // --- Data Initialization ---
     const initializeOrResetData = useCallback(() => {
@@ -163,6 +170,9 @@ const App: React.FC = () => {
             const spreadsheetId = window.GOOGLE_CREDS?.SPREADSHEET_ID;
             if (!spreadsheetId) throw new Error("Spreadsheet ID no encontrado.");
 
+            // Read data from the ref to ensure it's the latest version
+            const { playerNames, sessionLabels, performanceData, matches, trainingData } = dataRef.current;
+
             const performanceValues = [['Player', 'Test', 'SessionDate', 'Value'], ...playerNames.flatMap(player => TESTS.flatMap(test => sessionLabels.map((session, idx) => [player, test, session, performanceData[player]?.[test]?.[idx] || '0.0'])))];
             const matchesValues = [['ID', 'Date', 'Type', 'Opponent', 'Result', 'SquadJSON', 'GoalsJSON', 'AssistsJSON'], ...matches.map(m => [m.id, m.date, m.type, m.opponent, m.result, JSON.stringify(m.squad), JSON.stringify(m.goals), JSON.stringify(m.assists)])];
             const trainingsValues = [['Date', 'PlayerName', 'Status'], ...Object.entries(trainingData).flatMap(([date, records]) => Object.entries(records).map(([player, status]) => [date, player, status]))];
@@ -190,7 +200,7 @@ const App: React.FC = () => {
         } finally {
             setIsProcessing(false);
         }
-    }, [isSignedIn, gapiClient, playerNames, sessionLabels, performanceData, matches, trainingData]);
+    }, [isSignedIn, gapiClient]);
 
     const loadDataFromSheet = useCallback(async () => {
         if (!isSignedIn || !gapiClient) {
@@ -473,14 +483,6 @@ const App: React.FC = () => {
                 {activeMainTab === 'entrenamientos' && ( <div className="p-4 sm:p-6"> <TrainingsDashboard playerNames={playerNames} trainingData={trainingData} setTrainingData={setTrainingData} /> </div> )}
             </div>
             <ResetModal isOpen={isResetModalOpen} onClose={() => setResetModalOpen(false)} onConfirm={confirmReset} />
-
-            {/* --- Temporary Debug View --- */}
-            <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: 'rgba(0,0,0,0.8)', color: 'white', padding: '10px', zIndex: 9999, maxHeight: '200px', overflowY: 'auto' }}>
-                <h3 style={{ margin: 0, paddingBottom: '5px' }}>Debug Info:</h3>
-                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                    Player Names: {JSON.stringify(playerNames)}
-                </pre>
-            </div>
         </div>
     );
 };
