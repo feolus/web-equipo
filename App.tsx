@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { INITIAL_PLAYER_COUNT, TESTS } from './constants';
+import { TESTS } from './constants';
 import type { PerformanceData, MainTab, PhysicalTestTab, Match, TrainingData } from './types';
 import DataTable from './components/DataTable';
 import IndividualReport from './components/IndividualReport';
@@ -64,7 +64,12 @@ const App: React.FC = () => {
 
     // --- Data Initialization ---
     const initializeOrResetData = useCallback(() => {
-        const initialPlayerNames = Array.from({ length: INITIAL_PLAYER_COUNT }, (_, i) => `Jugador ${i + 1}`);
+        const initialPlayerNames = [
+            'Nico', 'Fran Medina', 'Sergio', 'Pimba', 'Del Pino', 'Sergio tasca',
+            'Gomariz', 'AFR', 'mateo', 'Sierra', 'Novoa', 'Carro', 'Aarón',
+            'Botti', 'H. Arias', 'Lois', 'Pumar', 'Touza', 'Dominguez Jr',
+            'Dani Gil', 'Costa'
+        ];
         setPlayerNames(initialPlayerNames);
         setSessionLabels([]);
         const data: PerformanceData = {};

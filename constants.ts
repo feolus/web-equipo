@@ -1,6 +1,3 @@
-
-export const INITIAL_PLAYER_COUNT = 25;
-
 export const TESTS = [
     'Velocidad 20m (s)', 
     'Agilidad (s)', 
